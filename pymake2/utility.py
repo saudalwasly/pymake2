@@ -309,3 +309,8 @@ def kill_alive_process(Proc):
     except:
       pass
   
+def gratiousStopOnError(returncode=0):
+  if returncode != 0:
+    print_color("An error occured while executing makefile \"%s\", line %s in target %s. Exiting with error code %d." % (
+      os.path.abspath(inspect.stack()[2][1]), inspect.stack()[2][2], inspect.stack()[2][3], returncode), tty_colors_cmds.BRed)
+    os._exit(returncode)

@@ -7,14 +7,26 @@ import re
 import inspect
 import utility as util
 from utility import tty_colors as colors
+from utility import *
 import fnmatch
-
+import importlib
+import traceback
 from time import sleep
-# makefileM = None # to be assigned upon importing
+import imp
+import contextlib
+from contextlib import contextmanager
 
 _Highlighting = False
 _HighlightingDict = {}
 
+def callable_by_makefile(func):
+  """
+    This is a decorator function used to identify which functions can be called by the makefiles
+  :param func:
+  :return:
+  """
+  func.is_callable_by_makefile = True
+  return func
 
 def eval(txt):
   outerframe = inspect.stack()[1][0]
@@ -349,11 +361,12 @@ def shell(cmd):
 
 def sh(cmd, show_cmd=False, CaptureOutput = False, Timeout = -1):
   if show_cmd:
-    print(cmd)
+    util.print_color('sh: "%s"'%cmd, util.tty_colors_cmds.BCyan)
   try:
     if CaptureOutput:
       if Timeout > -1:
-        P = sarge.run(cmd, shell=True, stdout=sarge.Capture(), stderr=sarge.Capture(), async=True)
+        # TODO: async_=True doesn't work (Windows vs Linux?)
+        P = sarge.run(cmd, shell=True, stdout=sarge.Capture(), stderr=sarge.Capture(), async_=False)
         # sleep(3)
         try:
           CMD = P.commands[0] #type: sarge.Command # FIXME: This line generates index exception sometime
@@ -367,7 +380,8 @@ def sh(cmd, show_cmd=False, CaptureOutput = False, Timeout = -1):
         P = sarge.run(cmd, shell=True, stdout=sarge.Capture(), stderr=sarge.Capture())
     else:
       if Timeout > -1:
-        P = sarge.run(cmd, shell=True, async=True)
+        # TODO: async_=True doesn't work
+        P = sarge.run(cmd, shell=True, async_=False)
         # sleep(3)
         try:
           CMD = P.commands[0] #type: sarge.Command # FIXME: This line generates index exception sometime
@@ -389,11 +403,13 @@ def sh(cmd, show_cmd=False, CaptureOutput = False, Timeout = -1):
         outputs = P.stderr.text
       else:
         outputs += '\n' + P.stderr.text
+    util.gratiousStopOnError(P.returncode)
     return P.returncode == 0, outputs
   except:
     if util.get_makefile_var('Debug') == True:
       util.Print_Debuging_messages()
   
+    util.gratiousStopOnError(1)
     return False, ''
     
   
@@ -422,8 +438,9 @@ def target(func):
   :return:
   """
   def target_func(*original_args, **original_kwargs):
-    # print 'before the func'
-    # print original_kwargs
+    #print 'before the func'
+    #print original_kwargs
+    #util.print_color("note: make.py::target_func func '%s' args '%s' kwargs '%s'." % (func.__name__, original_args, original_kwargs), util.tty_colors_cmds.ICyan)
     retV =  func(*original_args, **original_kwargs)
     if retV is None or retV == False:
       return False
@@ -433,9 +450,191 @@ def target(func):
   
   return target_func
 
+@callable_by_makefile
+def include(file):
+  """
+    Includes a makefile
+    :param file: Filename with path (if not in same directory as the calling makefile) of the makefile
+    :return: 
+  """
+  file = os.path.realpath(file)
+  if not os.path.exists(file):
+    util.print_color("error: include(%s): file does not exists.  Current working directory is '%s'." % (file, os.getcwd()), util.tty_colors_cmds.BRed)
+    traceback.print_exc()
+    sys.exit()
+  else:
+    util.print_color("note: including '%s'.  Current working directory is '%s'." % (file, os.getcwd()), util.tty_colors_cmds.ICyan)
+  # add the file's path of the included file to the system path
+  path, basename = os.path.split(file)
+  sys.path.append(path)
+  package = os.path.splitext(basename)[0]
+  imported_module = importlib.import_module(package)
+  #print "note: package '%s' contains these functions:" % imported_module.__name__
+  #print dir(imported_module)
+  return imported_module
+
+class Make_t(object):
+  Debug = True
+  HighlightErrors = False
+  HighlightWarnings = False
+  ExtraArgs = None
+
+  def __init__(self, MakefileWithPath, target, extra_args):
+    @contextlib.contextmanager
+    def cd(newdir):
+      prevdir = os.getcwd()
+      os.chdir(os.path.expanduser(newdir))
+      try:
+        yield
+      finally:
+        os.chdir(prevdir)
+
+    def Parse_Makefile(makefile_path, MakefileM):
+      Targets = {} #type: dict[str, Target_t]
+      if os.path.isfile(makefile_path):
+        f = open(makefile_path,'rb')
+        makefile_str = f.read()
+        f.close()
+        makefile_lines = makefile_str.splitlines()
+        for i,l in enumerate(makefile_lines):
+          if l.startswith('@target'):
+            target_func = re.findall(r'def\s+(\w+)\s*\(', makefile_lines[i+1])
+            target_func = target_func[0]
+            target_args = re.findall(r'def\s+\w+\s*\((.*)\)', makefile_lines[i+1])
+            target_args = target_args[0]
+            TargetV = Target_t(target_func, target_args, MakefileM)
+            Targets[target_func] = TargetV
+      
+        #Detect Dependencies
+        for key in Targets.keys():
+          tarItem = Targets[key]
+          for i, item in enumerate(tarItem.Dependencies):
+            if callable(item):
+              depTarget_str = tarItem.args_str[i]
+              depTarget = Targets[depTarget_str]
+              tarItem.Dependencies[i] = depTarget
+      return Targets
+
+    # use the context manager to temporarily change directory
+    with cd(os.path.dirname(MakefileWithPath)):
+      # import makefile and get variables and targets
+      #util.print_color("Attempting to open '%s' with current working directory '%s'." % (), util.tty_colors_cmds.On_Cyan)
+      Makefile = os.path.basename(MakefileWithPath)
+      if os.path.isfile(Makefile):
+        makefileM = imp.load_source('makefileM', Makefile)
+      else:
+        util.print_color("Error: makefile '%s' does not exist! Current Working Directory is '%s'." %(Makefile, os.path.realpath(os.path.curdir)), util.tty_colors_cmds.BRed)
+        if self.Debug:
+          traceback.print_exc()
+        sys.exit()
+      # todo: should 'Debug', 'HighlightErrors' and 'HighlightErrors' be checked only on top-level makefile or all makefiles? 
+      self.Debug = getattr(makefileM, 'Debug', False)
+      self.HighlightErrors = getattr(makefileM, 'HighlightErrors', False)
+      self.HighlightWarnings = getattr(makefileM, 'HighlightWarnings', False)
+      set_extra_args(extra_args)
+
+      Targets = Parse_Makefile(Makefile, makefileM) #type: dict[str, Target_t, dict]
+      target = target.strip()
+      if target in Targets.keys():
+        selected_Target = Targets[target]
+      else:
+        util.print_color("Error: target function '%s' does not exist in '%s'!" % (target, os.path.realpath(MakefileWithPath)), util.tty_colors_cmds.BRed)
+        sys.exit()
+
+      # run the target       
+      retV = selected_Target.run()
+
+class Target_t(Make_t):
+  def __init__(self, func, args, MakefileM):
+    name = os.path.abspath(MakefileM.__file__.replace('.pyc','.py'))
+    self.Name = "%s::%s" %(name, func)
+    self.func = getattr(MakefileM, func)
+    args_str = [item.strip() for item in args.split(',')]
+    args_var = [getattr(MakefileM, item) for item in args_str if item != '']
+    self.args_str = args_str
+    self.args_var = args_var
+    self.MakefileM = MakefileM
+    self.Dependencies = args_var
+    
+  def check_dependencies(self):
+    if len(self.Dependencies) == 0:
+      return True
+    
+    util.print_color('Dependency checking of Target "%s"' % self.Name, util.tty_colors_cmds.On_Cyan)
+    for i, item in enumerate(self.Dependencies):
+      if type(item) is list:
+        for subitem in item: # assumed to be list of file names (paths)
+          if not os.path.isfile(subitem):
+            util.write_color('Dependency Error @ Target "%s": ' % self.Name, util.tty_colors_cmds.BRed)
+            print '%s does not exsist!'%subitem
+            return False
+      elif type(item) is str:
+        if not os.path.isfile(item):
+          util.write_color('Dependency Error @ Target "%s": ' % self.Name, util.tty_colors_cmds.BRed)
+          print '%s does not exsist!' % item
+          return False
+      elif type(item) is Target_t: #another target
+        if not item.run():
+          util.write_color('Dependency Error @ Target "%s": ' % self.Name, util.tty_colors_cmds.BRed)
+          print 'Target "%s" failed' % item.Name
+          return False
+    
+    return True
+  
+  def run(self):
+    if self.check_dependencies():
+
+      util.print_color('Executing Target "%s"' % self.Name, util.tty_colors_cmds.On_Cyan)
+      util.print_color("note: pymake2.py::self.func '%s' self.args_var '%s'." % (self.func.__name__, self.args_var), util.tty_colors_cmds.ICyan)
+      try:
+        if len(self.args_var) == 0:
+          retV = self.func()
+        else:
+          retV = self.func(*self.args_var)
+
+        if not retV:
+          util.print_color('Target "%s" failed' %self.Name , util.tty_colors_cmds.BRed)
+        return retV
+      except:
+        util.print_color('Internal error in the target function "%s"' % self.Name, util.tty_colors_cmds.BRed)
+        if self.Debug:
+          traceback.print_exc()
+
+    else:
+      return False
+
+@callable_by_makefile
+def recurse(MakefilePath, _target, extra_args='', extra_args_override=False):
+  """
+  :param MakefilePath: (str) the path and filename of the makefile 
+  :param _target: (str) the target of the makefile
+  :param extra_args: (str) arguments not parsed by pymake2.
+  :param extra_args_override: (boolean) when 'False', argument extra_args is appended to current makefile's extra arguments
+  :return:
+  """
+  if extra_args == '':
+    extra_args_l = []
+  else:
+    extra_args_l = extra_args.split(',')
+  if not extra_args_override:
+    extra_args_l.extend(get_extra_args())
+
+  util.print_color("recurse: MakefilePath %s _target %s extra_args %s " %(MakefilePath, _target, extra_args), colors.Cyan)
+  my_make = Make_t(MakefilePath, _target, extra_args_l)
+
+def set_extra_args(extra_args):
+  extra_args_str = ''
+  if isinstance(extra_args,list):
+    extra_args_str = ','.join(extra_args)
+  else:
+    extra_args_str += extra_args
+  os.environ['PYMAKE2_EXTRA_ARGS'] = extra_args_str
+
+def get_extra_args():
+  return os.environ['PYMAKE2_EXTRA_ARGS'].split(',')
 
 if __name__ == '__main__':
-    print 'testing find()'
-    flist = find(DirOnly=True, abslute=False)
-    printlist(flist)
-    print 'File List has %d items'%len(flist)
+  print 'testing find()'
+  flist = find(DirOnly=True, abslute=False)
+  printlist(flist)
+  print 'File List has %d items'%len(flist)

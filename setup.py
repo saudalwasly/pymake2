@@ -14,13 +14,13 @@ class MyInstall(install):
     def run(self):
         install.run(self)
         #print("\n\n\n\nI did it!!!!\n\n\n\n")
-        cmd = 'sudo activate-global-python-argcomplete'
-        print cmd
-        os.system(cmd)        
+        #cmd = 'sudo activate-global-python-argcomplete'
+        #print cmd
+        #os.system(cmd)        
 
 setup(
     name="pymake2",
-    version = "0.5.33",
+    version = "0.6.00",
     author = "Saud Wasly",
     author_email = "saudalwasli@gmail.com",
     description = ("pymake2 is a simple Python-based make system. It brings simplicity and flexibility of Python language to makefiles."),
@@ -29,9 +29,9 @@ setup(
     url = "https://bitbucket.org/saudalwasly/pymake2/src",
     install_requires=["argcomplete", "sarge"],
     packages=['pymake2'],
-    scripts=['pymake2/pymake2', 'pymake2/pmake2'],
+    scripts=['pymake2/pymake2'],
     #data_files = [('', ['__init__.py', 'pymake2', 'make.py', 'utility.py', 'makefile_template.py'])] ,
-    long_description=read('README.rst'),
+    long_description=read('README.md'),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Topic :: Utilities",        
